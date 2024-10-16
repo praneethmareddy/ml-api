@@ -3,5 +3,4 @@ uvicorn
 pymongo
 scikit-learn
 numpy
-bson==0.5.10
-gunicorn
+
