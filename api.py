@@ -6,7 +6,7 @@ import numpy as np
 from pymongo import MongoClient
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from bson.objectid import ObjectId
+from bson.objectid import ObjectId  # Ensure bson is imported correctly
 
 app = FastAPI()
 
@@ -127,4 +127,3 @@ def recommend_posts(user_input: UserInput):
     # Endpoint to get post recommendations for a user
     recommendations = recommend_posts_for_user(user_input.user_id, user_input.top_n)
     return {"recommendations": recommendations}
-
