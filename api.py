@@ -77,7 +77,7 @@ def recommend_posts_for_user(user_id, top_n=5):
     user_posts_vector = vectorizer.transform(user_posts_text)
 
     # Fetch all posts to compare against
-    all_posts = list(posts_collection.find({}, {'postedBy': 1, 'text': 1, '_id': 1}))
+    all_posts = list(posts_collection.find({'postedBy': {'$ne': ObjectId(user_id)}}, {'postedBy': 1, 'text': 1, '_id': 1}))
 
     if len(all_posts) == 0:
         raise HTTPException(status_code=404, detail="No posts available for recommendation.")
