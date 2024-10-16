@@ -39,16 +39,16 @@ class UserInput(BaseModel):
 # Utility functions
 def get_existing_posts():
     # Fetch all posts from the collection
-    posts = posts_collection.find({}, {'postedBy': 1, 'text': 1})
-    return [(post['postedBy'], post['text']) for post in posts]
+    posts = posts_collection.find({}, {'postedBy': 1, 'text': 1, '_id': 1})
+    return [(post['_id'], post['postedBy'], post['text']) for post in posts]
 
 def update_model(new_post, posted_by):
     # Update the recommendation model with the new post
     existing_posts = get_existing_posts()
-    existing_posts.append((posted_by, new_post))
+    existing_posts.append((None, posted_by, new_post))  # None for the new post ID
 
     vectorizer = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = vectorizer.fit_transform([text for _, text in existing_posts])
+    tfidf_matrix = vectorizer.fit_transform([text for _, _, text in existing_posts])
 
     with open('recommendation_model.pkl', 'wb') as model_file:
         pickle.dump((vectorizer, tfidf_matrix), model_file)
@@ -65,7 +65,7 @@ def recommend_posts_for_user(user_id, top_n=5):
 
     # Fetch the user's posts
     try:
-        user_posts = list(posts_collection.find({'postedBy': ObjectId(user_id)}, {'postedBy': 1, 'text': 1}))
+        user_posts = list(posts_collection.find({'postedBy': ObjectId(user_id)}, {'postedBy': 1, 'text': 1, '_id': 1}))
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error fetching posts: " + str(e))
 
@@ -77,7 +77,7 @@ def recommend_posts_for_user(user_id, top_n=5):
     user_posts_vector = vectorizer.transform(user_posts_text)
 
     # Fetch all posts to compare against
-    all_posts = list(posts_collection.find({}, {'postedBy': 1, 'text': 1}))
+    all_posts = list(posts_collection.find({}, {'postedBy': 1, 'text': 1, '_id': 1}))
 
     if len(all_posts) == 0:
         raise HTTPException(status_code=404, detail="No posts available for recommendation.")
@@ -99,6 +99,7 @@ def recommend_posts_for_user(user_id, top_n=5):
     for i in similar_indices:
         post = all_posts[i]
         similar_posts.append({
+            'postId': str(post['_id']),  # Add post ID
             'userId': str(post['postedBy']),
             'text': post['text']
         })
@@ -108,7 +109,7 @@ def recommend_posts_for_user(user_id, top_n=5):
     seen_posts = set()
 
     for post in similar_posts:
-        post_tuple = (post['userId'], post['text'])
+        post_tuple = (post['postId'], post['userId'], post['text'])  # Use postId for uniqueness
         if post_tuple not in seen_posts:
             seen_posts.add(post_tuple)
             unique_posts.append(post)
