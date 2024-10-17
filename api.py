@@ -6,7 +6,7 @@ import numpy as np
 from pymongo import MongoClient
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from bson.objectid import ObjectId  # Ensure bson is imported correctly
+from bson.objectid import ObjectId
 
 app = FastAPI()
 
@@ -26,6 +26,7 @@ DATABASE_NAME = 'thread'
 client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
 posts_collection = db['posts']
+users_collection = db['users']  # Assuming there's a collection for valid users
 
 # Pydantic models for input validation
 class PostInput(BaseModel):
@@ -114,10 +115,10 @@ def recommend_posts_for_user(user_id, top_n=5):
             seen_posts.add(post_tuple)
             unique_posts.append(post)
 
-    # Validate user IDs in the recommendations
-    valid_user_ids = {str(user['_id']) for user in posts_collection.find({}, {'postedBy': 1})}
+    # Check if the users who posted are valid
+    valid_user_ids = {str(user['_id']) for user in users_collection.find({}, {'_id': 1})}
     
-    # Filter unique posts to only include those with valid user IDs
+    # Filter out posts from invalid users
     filtered_posts = [post for post in unique_posts if post['userId'] in valid_user_ids]
 
     return filtered_posts[:top_n]
