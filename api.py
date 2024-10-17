@@ -114,7 +114,13 @@ def recommend_posts_for_user(user_id, top_n=5):
             seen_posts.add(post_tuple)
             unique_posts.append(post)
 
-    return unique_posts[:top_n]
+    # Validate user IDs in the recommendations
+    valid_user_ids = {str(user['_id']) for user in posts_collection.find({}, {'postedBy': 1})}
+    
+    # Filter unique posts to only include those with valid user IDs
+    filtered_posts = [post for post in unique_posts if post['userId'] in valid_user_ids]
+
+    return filtered_posts[:top_n]
 
 # FastAPI endpoints
 @app.post('/update_model')
