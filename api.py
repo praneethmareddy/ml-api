@@ -26,14 +26,34 @@ DATABASE_NAME = 'thread'
 client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
 posts_collection = db['posts']
-users_collection = db['users']
+users_collection = db['users']  # Assuming there's a collection for valid users
 
 # Pydantic models for input validation
+class PostInput(BaseModel):
+    text: str
+    posted_by: str
+
 class UserInput(BaseModel):
     user_id: str
     top_n: int = 5
 
 # Utility functions
+def get_existing_posts():
+    # Fetch all posts from the collection
+    posts = posts_collection.find({}, {'postedBy': 1, 'text': 1, '_id': 1})
+    return [(post['_id'], post['postedBy'], post['text']) for post in posts]
+
+def update_model(new_post, posted_by):
+    # Update the recommendation model with the new post
+    existing_posts = get_existing_posts()
+    existing_posts.append((None, posted_by, new_post))  # None for the new post ID
+
+    vectorizer = TfidfVectorizer(stop_words='english')
+    tfidf_matrix = vectorizer.fit_transform([text for _, _, text in existing_posts])
+
+    with open('recommendation_model.pkl', 'wb') as model_file:
+        pickle.dump((vectorizer, tfidf_matrix), model_file)
+
 def load_model():
     # Load the saved recommendation model from disk
     with open('recommendation_model.pkl', 'rb') as model_file:
@@ -44,29 +64,28 @@ def recommend_posts_for_user(user_id, top_n=5):
     # Load the trained model
     vectorizer, tfidf_matrix = load_model()
 
-    # Ensure user exists in the database
-    user = users_collection.find_one({'_id': ObjectId(user_id)}, {'following': 1})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+    # Fetch the user's posts
+    try:
+        user_posts = list(posts_collection.find({'postedBy': ObjectId(user_id)}, {'postedBy': 1, 'text': 1, '_id': 1}))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error fetching posts: " + str(e))
 
-    # Fetch the posts from the users that the current user is following
-    following_ids = user.get('following', [])
-    following_posts = list(posts_collection.find(
-        {'postedBy': {'$in': following_ids}},
-        {'postedBy': 1, 'text': 1, '_id': 1}
-    ))
+    if not user_posts:
+        raise HTTPException(status_code=404, detail="No posts found for the user.")
+
+    # Extract user posts text for similarity comparison
+    user_posts_text = [post['text'] for post in user_posts]
+    user_posts_vector = vectorizer.transform(user_posts_text)
 
     # Fetch all posts to compare against
     all_posts = list(posts_collection.find({'postedBy': {'$ne': ObjectId(user_id)}}, {'postedBy': 1, 'text': 1, '_id': 1}))
+
     if len(all_posts) == 0:
         raise HTTPException(status_code=404, detail="No posts available for recommendation.")
 
-    # Extract posts text for similarity comparison
     all_posts_text = [post['text'] for post in all_posts]
-    following_posts_text = [post['text'] for post in following_posts]
-    
+
     # Calculate similarity between the user's posts and all other posts
-    user_posts_vector = vectorizer.transform(following_posts_text)
     all_posts_vector = vectorizer.transform(all_posts_text)
     similarities = cosine_similarity(user_posts_vector, all_posts_vector)
     
@@ -96,22 +115,27 @@ def recommend_posts_for_user(user_id, top_n=5):
             seen_posts.add(post_tuple)
             unique_posts.append(post)
 
-    # Combine following posts and recommended posts
-    combined_posts = following_posts + unique_posts
+    # Check if the users who posted are valid
+    valid_user_ids = {str(user['_id']) for user in users_collection.find({}, {'_id': 1})}
+    
+    # Filter out posts from invalid users
+    filtered_posts = [post for post in unique_posts if post['userId'] in valid_user_ids]
 
-    # Remove duplicates based on postId
-    seen_posts = set()
-    final_posts = []
-    for post in combined_posts:
-        if post['postId'] not in seen_posts:
-            seen_posts.add(post['postId'])
-            final_posts.append(post)
+    return filtered_posts[:top_n]
 
-    # Return top N unique posts
-    return final_posts[:top_n]
+# FastAPI endpoints
+@app.post('/update_model')
+def update_model_endpoint(post_input: PostInput):
+    # Endpoint to update the model with a new post
+    update_model(post_input.text, post_input.posted_by)
+    return {"message": "Model updated with the new post."}
 
-# FastAPI endpoint to get post recommendations
 @app.post('/recommend_posts')
 def recommend_posts(user_input: UserInput):
+    # Endpoint to get post recommendations for a user
     recommendations = recommend_posts_for_user(user_input.user_id, user_input.top_n)
     return {"recommendations": recommendations}
+    
+    
+    
+    
