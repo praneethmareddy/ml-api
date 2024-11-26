@@ -1,12 +1,26 @@
-from fastapi import HTTPException
-from pymongo import MongoClient
-import numpy as np
-from bson.objectid import ObjectId
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import pickle
+import numpy as np
+from pymongo import MongoClient
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from bson.objectid import ObjectId
 
-# MongoDB connection setup
+app = FastAPI()
+
+# Allow all CORS requests (adjust this for production as needed)
+origins = ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# MongoDB URI and database setup
 MONGO_URI = 'mongodb+srv://praneethmareddy:saip9091@cluster0.rfvy63z.mongodb.net/thread?retryWrites=true&w=majority'
 DATABASE_NAME = 'thread'
 client = MongoClient(MONGO_URI)
@@ -14,9 +28,14 @@ db = client[DATABASE_NAME]
 posts_collection = db['posts']
 users_collection = db['users']
 
-# Utility function to load the trained recommendation model
+# Pydantic models for input validation
+class UserInput(BaseModel):
+    user_id: str
+    top_n: int = 5
+
+# Utility functions
 def load_model():
-    # Load the saved recommendation model from disk (assumed to be a pickle file)
+    # Load the saved recommendation model from disk
     with open('recommendation_model.pkl', 'rb') as model_file:
         vectorizer, tfidf_matrix = pickle.load(model_file)
     return vectorizer, tfidf_matrix
@@ -30,70 +49,69 @@ def recommend_posts_for_user(user_id, top_n=5):
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    # Fetch the user's posts
-    user_posts = list(posts_collection.find({'postedBy': ObjectId(user_id)}, {'postedBy': 1, 'text': 1, '_id': 1}))
-    if not user_posts:
-        raise HTTPException(status_code=404, detail="No posts found for the user.")
-
-    # Extract user posts' text for similarity comparison
-    user_posts_text = [post['text'] for post in user_posts]
-    user_posts_vector = vectorizer.transform(user_posts_text)
-
-    # Fetch posts from users the current user is following
+    # Fetch the posts from the users that the current user is following
     following_ids = user.get('following', [])
     following_posts = list(posts_collection.find(
         {'postedBy': {'$in': following_ids}},
         {'postedBy': 1, 'text': 1, '_id': 1}
     ))
 
-    # Ensure all following posts are valid (posts from valid users)
-    valid_following_posts = []
-    for post in following_posts:
-        if users_collection.find_one({'_id': post['postedBy']}):  # Check if `postedBy` user exists
-            valid_following_posts.append({
-                'postId': str(post['_id']),
-                'userId': str(post['postedBy']),
-                'text': post['text']
-            })
+    # Fetch all posts to compare against
+    all_posts = list(posts_collection.find({'postedBy': {'$ne': ObjectId(user_id)}}, {'postedBy': 1, 'text': 1, '_id': 1}))
+    if len(all_posts) == 0:
+        raise HTTPException(status_code=404, detail="No posts available for recommendation.")
 
-    # Fetch all other posts for recommendations (posts not from the current user)
-    other_posts = list(posts_collection.find(
-        {'postedBy': {'$ne': ObjectId(user_id)}},
-        {'postedBy': 1, 'text': 1, '_id': 1}
-    ))
-
-    # Calculate similarities between user's posts and other posts
-    all_posts_text = [post['text'] for post in other_posts]
+    # Extract posts text for similarity comparison
+    all_posts_text = [post['text'] for post in all_posts]
+    following_posts_text = [post['text'] for post in following_posts]
+    
+    # Calculate similarity between the user's posts and all other posts
+    user_posts_vector = vectorizer.transform(following_posts_text)
     all_posts_vector = vectorizer.transform(all_posts_text)
     similarities = cosine_similarity(user_posts_vector, all_posts_vector)
+    
+    # Calculate average similarity for each post
     avg_similarities = np.mean(similarities, axis=0)
-    similar_indices = np.argsort(avg_similarities)[::-1]  # Sort by similarity, highest first
 
-    # Extract recommended posts based on similarity
-    recommended_posts = []
+    # Sort posts by similarity
+    similar_indices = np.argsort(avg_similarities)[::-1]
+
+    # Build the list of recommended posts
+    similar_posts = []
     for i in similar_indices:
-        post = other_posts[i]
-        # Check if both post and user are valid
-        if (
-            posts_collection.find_one({'_id': post['_id']}) and  # Check if post exists
-            users_collection.find_one({'_id': post['postedBy']})  # Check if user exists
-        ):
-            recommended_posts.append({
-                'postId': str(post['_id']),
-                'userId': str(post['postedBy']),
-                'text': post['text']
-            })
+        post = all_posts[i]
+        similar_posts.append({
+            'postId': str(post['_id']),  # Add post ID
+            'userId': str(post['postedBy']),
+            'text': post['text']
+        })
 
-    # Combine valid following posts and recommended posts
-    combined_posts = valid_following_posts + recommended_posts
-
-    # Deduplicate posts based on postId
-    seen_posts = set()
+    # Remove duplicate posts
     unique_posts = []
+    seen_posts = set()
+
+    for post in similar_posts:
+        post_tuple = (post['postId'], post['userId'], post['text'])  # Use postId for uniqueness
+        if post_tuple not in seen_posts:
+            seen_posts.add(post_tuple)
+            unique_posts.append(post)
+
+    # Combine following posts and recommended posts
+    combined_posts = following_posts + unique_posts
+
+    # Remove duplicates based on postId
+    seen_posts = set()
+    final_posts = []
     for post in combined_posts:
         if post['postId'] not in seen_posts:
             seen_posts.add(post['postId'])
-            unique_posts.append(post)
+            final_posts.append(post)
 
     # Return top N unique posts
-    return unique_posts[:top_n]
+    return final_posts[:top_n]
+
+# FastAPI endpoint to get post recommendations
+@app.post('/recommend_posts')
+def recommend_posts(user_input: UserInput):
+    recommendations = recommend_posts_for_user(user_input.user_id, user_input.top_n)
+    return {"recommendations": recommendations}
