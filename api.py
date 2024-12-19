@@ -60,7 +60,7 @@ def load_model():
         vectorizer, tfidf_matrix = pickle.load(model_file)
     return vectorizer, tfidf_matrix
 
-def recommend_posts_for_user(user_id, top_n=5):
+def recommend_posts_for_user(user_id, top_n=2):
     # Load the trained model
     vectorizer, tfidf_matrix = load_model()
 
